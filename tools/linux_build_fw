@@ -1,0 +1,21 @@
+#!/bin/bash
+
+CUR_DIR=`pwd`
+FW_NAME=$3
+IMAGE_CFG_FILE=$1
+IMAGE_OUTPUT_DIR=$2
+
+CUR_TIME=`date "+%y%m%d"`
+sed -i "s/VER = .*$/VER = \"3.10.37.$CUR_TIME\";/g" $IMAGE_CFG_FILE
+
+
+MAKER_BIN=$CUR_DIR/Output/PyMaker.pyo
+echo "python -O ${MAKER_BIN} -c ./$IMAGE_CFG_FILE -o ${IMAGE_OUTPUT_DIR}/tmp.fw --mf 1"
+python -O ${MAKER_BIN} -c ./$IMAGE_CFG_FILE -o ${IMAGE_OUTPUT_DIR}/tmp.fw --mf 1
+
+
+MAKER_BIN=$CUR_DIR/Output/CompoundFW
+${MAKER_BIN} -fi:$IMAGE_OUTPUT_DIR/tmp.fw -fo:$PWD/../${FW_NAME}.fw
+rm $IMAGE_OUTPUT_DIR/tmp.fw
+
+exit 0

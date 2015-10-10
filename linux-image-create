@@ -1,0 +1,395 @@
+#!/bin/bash
+
+# Copyright (C) 2015 LeMaker Community <support@lemaker.org>
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#       http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+VERSION="v1.0.1"
+SHELLNAME=`basename $0`
+CUR_DIR=`pwd`
+TMP_DIR="$CUR_DIR/.tmp"
+DEFAULT_SYS_IMG_NAME="s500_lemaker_guitar"
+
+# ***Don't try to change these variables below,Unless you are already familiar with production 
+# process of system image*** 
+#
+OUT_DIR=$CUR_DIR/output
+ROOTFS_SIZE=3443
+ROOTFS_LABEL="rootfs"
+ROOTFS_TYPE="ext4"
+ROOTFS_NAME="rootfs.img"
+MISC_NAME="misc.img"
+
+usage()
+{
+        echo -e "Usage:  $SHELLNAME [options] [parameters]"
+        echo -e ""
+	echo -e "Options:"
+	echo -e "\t-t --type    Configure image type"
+	echo -e "\t-p --hwpack  Chose platform firmware compression package"
+        echo -e "\t-r --rootfs  Chose root file system"
+	echo -e "\t-h --help    Help information"
+	echo -e "\t-c --clean   Clean all object file"
+	echo -e "\t-o --output  Configure output file name" 
+	echo -e ""
+	echo -e "Example:"
+	echo -e "\t$SHELLNAME --type [emmc|sd] --hwpack xxx_hwpack.tar.[xz|bz2|gz] --rootfs xxxx_rootfs.tar[.bz2|xz|gz] <--output s500_lemaker_guitar>"
+	echo -e ""	
+}
+
+create_tmp_dir()
+{
+	if [ ! -d "$TMP_DIR/mnt" ]; then
+  		mkdir -pv $TMP_DIR/mnt
+	fi
+
+	if [ ! -d "$TMP_DIR/hwpack" ];then
+		mkdir -pv $TMP_DIR/hwpack
+	fi
+	
+	if [ ! -d "$TMP_DIR/rootfs" ];then
+		mkdir -pv $TMP_DIR/rootfs
+	fi
+
+	if [ ! -d "$OUT_DIR" ]; then
+  		mkdir -pv $OUT_DIR
+	fi
+}
+
+remove_tmp_file()
+{
+	rm -rf $CUR_DIR/tools/partition.cfg
+	rm -rf $CUR_DIR/tools/Output
+}
+
+#Clean all object files
+#
+clean_object_file()
+{
+	remove_tmp_file;
+	rm -rf $TMP_DIR
+	rm -rf $OUT_DIR
+}
+
+echo_info()
+{
+	echo "------------------------------------------------"
+	echo -e "$1"
+}
+
+# Arguments:
+#   $1 - source compressed file
+#   $2 - target directory
+#
+decompress_file()
+{
+	echo_info "Start to decompress file \""$1"\""
+	tar xf $1 -C $2
+	if [ $? -ne 0 ];then
+		echo_info "\"$1\": \033[31mDecompress the file failed\033[0m"
+		return 1
+	fi
+	
+	return 0	
+}
+
+# Arguments:
+#   $1 - hwpack package
+#   $2 - real rootfs
+#
+extract_firmware_package()
+{
+	decompress_file $1 $TMP_DIR/hwpack
+	if [ $? -ne 0 ];then
+		exit 1
+	fi
+
+        echo_info "Start to extract the platform firmware package"
+        [ -d "$2/etc/modprobe.d" ] && rm -rf $2/etc/modprobe.d/* && \
+        cp -a $TMP_DIR/hwpack/rootfs/etc/modprobe.d/* $2/etc/modprobe.d/
+        cp -a $TMP_DIR/hwpack/rootfs/etc/* $2/etc
+        rm -rf $2/lib/modules && cp -a $TMP_DIR/hwpack/rootfs/lib/* $2/lib
+
+        cp -f $TMP_DIR/hwpack/bootloader/{bootloader.bin,u-boot-dtb.img} $OUT_DIR
+        cp -f $TMP_DIR/hwpack/kernel/$MISC_NAME $OUT_DIR
+}
+
+# Arguments
+#   $1 - source directory
+#   $2 - mount directory
+#
+find_valid_rootfs_path()
+{	
+	local cnt=0
+	local TEMP_PATH="$1/etc"
+	while [ $cnt -lt 6 ]
+	do
+		cd $TEMP_PATH > /dev/null 2>&1
+		if [ $? -ne 0 ];then
+			TEMP_PATH=`echo  $TEMP_PATH | sed -e 's/etc/\*\/etc/g'`
+		else
+			TEMP_PATH=`pwd`
+			echo_info "Start to copy file system, please wait ..."
+			cd $TEMP_PATH/../ && cp -a * $2
+			sync
+			cd $CUR_DIR
+			return 0
+		fi
+		cnt=$(($cnt+1))
+	done
+
+	return 1
+}
+
+#create rootfs image for emmc and sd card
+# Arguments
+#   $1 - source rootfs file
+#   $2 - source hwpack file
+#
+create_rootfs_img()
+{
+	if [ -f "$TMP_DIR/rootfs.md5" ];then
+		OLD_MD5=`cat $TMP_DIR/rootfs.md5`
+		NEW_MD5=`md5sum $1 | cut -d ' ' -f1`
+		if [ "${OLD_MD5}" = "${NEW_MD5}" ];then
+			echo_info  "\033[32m\"$1\" doesn't update,  Don't need to decompress again\033[0m"
+			if [ -e "$OUT_DIR/$ROOTFS_NAME" ];then
+				mount -o loop $OUT_DIR/$ROOTFS_NAME $TMP_DIR/mnt
+			else
+ 				echo_info "\033[31m\"$OUT_DIR/$ROOTFS_NAME\": is not exist, Please run command \"./$SHELLNAME --clean\"\033[0m"
+				exit 1
+			fi
+			IS_UPDATE=0
+
+		else
+			if [ -e "$OUT_DIR/$ROOTFS_NAME" ];then
+				mount -o loop $OUT_DIR/$ROOTFS_NAME $TMP_DIR/mnt
+				rm -rf $TMP_DIR/mnt/*
+			else
+				echo_info "Start to create \"$ROOTFS_NAME\" by using dd command, please wait ..."
+				dd if=/dev/zero of=$OUT_DIR/$ROOTFS_NAME bs=1M count=$ROOTFS_SIZE > /dev/null 2>&1
+        			mkfs.${ROOTFS_TYPE} -F -L $ROOTFS_LABEL $OUT_DIR/$ROOTFS_NAME > /dev/null 2>&1
+        			mount -o loop $OUT_DIR/$ROOTFS_NAME $TMP_DIR/mnt
+			fi
+			
+			IS_UPDATE=1
+			echo $NEW_MD5 > $TMP_DIR/rootfs.md5
+		fi
+	else
+		md5sum $1 | cut -d ' ' -f1 > $TMP_DIR/rootfs.md5
+		echo_info "Start to create \"$ROOTFS_NAME\" by using dd command, please wait ..."
+		dd if=/dev/zero of=$OUT_DIR/$ROOTFS_NAME bs=1M count=$ROOTFS_SIZE > /dev/null 2>&1
+		mkfs.${ROOTFS_TYPE} -F -L $ROOTFS_LABEL $OUT_DIR/$ROOTFS_NAME > /dev/null 2>&1
+		mount -o loop $OUT_DIR/$ROOTFS_NAME $TMP_DIR/mnt
+		IS_UPDATE=1
+	fi
+	#Once the file system is updated, and need to re-extract hwpack package
+	#
+	if [ $IS_UPDATE -ne 0 ];then
+		decompress_file  $1  $TMP_DIR/rootfs
+		if [ $? -ne 0 ];then
+			sync && umount $TMP_DIR/mnt
+			exit 1
+		fi
+		
+		find_valid_rootfs_path $TMP_DIR/rootfs $TMP_DIR/mnt
+		if [ $? -ne 0 ];then
+			echo_info "\"$1\": \033[31mUnrecognized directory structure\033[0m"
+			exit 1
+		fi
+
+		extract_firmware_package $2 $TMP_DIR/mnt
+		md5sum $2 | cut -d ' ' -f1 > $TMP_DIR/hwpack.md5
+	else
+		OLD_MD5=`cat $TMP_DIR/hwpack.md5`
+		NEW_MD5=`md5sum $2 | cut -d ' ' -f1`
+		if [ "${OLD_MD5}" = "${NEW_MD5}" ];then
+			echo_info "\033[32m\"$2\" doesn't update, Don't need to decompress again\033[0m"
+		else
+ 			extract_firmware_package $2 $TMP_DIR/mnt
+			echo $NEW_MD5 > $TMP_DIR/hwpack.md5
+		fi
+	fi
+
+	sync && umount $TMP_DIR/mnt
+	
+	#delete object file and save space	
+	if [ -d $TMP_DIR/hwpack ];then
+		rm -rf $TMP_DIR/hwpack
+	fi
+	
+	if [ -d $TMP_DIR/rootfs ];then
+		rm -rf $TMP_DIR/rootfs
+	fi
+}
+
+#create system firmware for emmc
+#
+create_fw_for_emmc()
+{
+	echo_info "\033[32m\n*** Start to create firmware for emmc ***\n\033[0m"
+	cd $CUR_DIR/tools && \
+	./maker_install.run && \
+	python partition_create.py partition.conf partition.cfg && \
+	./linux_build_fw fwimage_linux.cfg $OUT_DIR $TARGETNAME && \
+	cd $CUR_DIR
+}
+
+#create system image(3500M) for sd card
+#
+create_img_for_sd()
+{
+        type parted > /dev/null 2>&1
+        if [ $? -ne 0 ];then
+                echo_info "\033[31mThe command \"parted\" is currently not installed, you have to install it first\033[0m"
+                exit 1
+        fi
+
+        type kpartx > /dev/null 2>&1
+        if [ $? -ne 0 ];then
+                echo_info "\033[31mThe command \"kpartx\" is currently not installed, you have to install it first\033[0m"
+                exit 1
+        fi
+
+	echo_info "\033[32m\n*** Start to create image for sd card ***\n\033[0m"
+	
+	if [ -e $CUR_DIR/$TARGETNAME.img ];then
+		echo_info "\033[32m\"$CUR_DIR/$TARGETNAME.img\": has been created, Don't re-create by using dd command\033[0m"
+	else
+		echo_info "Start to create \"$TARGETNAME.img\" by using dd command, please wait ..."
+		dd bs=1M count=3500 if=/dev/zero of=$CUR_DIR/$TARGETNAME.img
+	fi
+	LOOP_DEV_PATH=`losetup -f --show $CUR_DIR/$TARGETNAME.img`
+	LOOP_DEV=`echo $LOOP_DEV_PATH | cut -d'/' -f3`
+
+	echo_info "Start to create two partition by using \"parted\" command"
+	parted -s $LOOP_DEV_PATH mklabel gpt
+	parted -s $LOOP_DEV_PATH unit s mkpart primary 16384  114687     #First  partition 8M  - 56M
+	parted -s $LOOP_DEV_PATH unit s mkpart primary 114688 7167966    #Second partition 57M - -1
+	
+	kpartx -av $LOOP_DEV_PATH
+	
+	echo_info "Start to erase system image"
+	dd if=/dev/zero of=$LOOP_DEV_PATH bs=512 count=12286 seek=4097 > /dev/null 2>&1
+	mkfs.vfat /dev/mapper/${LOOP_DEV}p1 > /dev/null 2>&1
+	mkfs.ext4 /dev/mapper/${LOOP_DEV}p2 > /dev/null 2>&1
+
+	echo_info "Start to write \"bootloader.bin\" to system image, please wait ..."
+	dd if=$OUT_DIR/bootloader.bin of=$LOOP_DEV_PATH  bs=512 seek=4097 && sync
+
+	echo_info "Start to write \"u-boot-dtb.img\" to system image, please wait ..."
+	dd if=$OUT_DIR/u-boot-dtb.img of=$LOOP_DEV_PATH  bs=512 seek=6144 && sync
+
+	echo_info "Start to write \"$MISC_NAME\" to system image, please wait ..."
+	dd bs=1M if=$OUT_DIR/$MISC_NAME of=/dev/mapper/${LOOP_DEV}p1 && sync
+	
+	echo_info "Start to write \"$ROOTFS_NAME\" to system image, please wait ... "
+	dd bs=4M if=$OUT_DIR/$ROOTFS_NAME of=/dev/mapper/${LOOP_DEV}p2 && sync
+	
+	kpartx -d $LOOP_DEV_PATH
+	losetup -d $LOOP_DEV_PATH
+}
+
+# ************************
+# * Shell start here *
+# ************************
+
+if [ `id -u` -ne 0 ];then
+	echo -e "Please run the script with \033[31mroot\033[0m"
+	exit 1
+fi
+
+if [ $# -eq 0 ];then
+	usage;
+	exit 1;
+fi
+
+while [ $# -gt 0 ];
+do
+	case "$1" in
+		-t|--type)
+			IMGTYPE=$2;
+			shift
+		;;
+		-p|--hwpack)
+			HWPACK=$2;
+			shift
+		;;
+		-r|--rootfs)
+			ROOTFS=$2;
+			shift
+		;;
+		-o|--output)
+			TARGETNAME=$2;
+			shift
+		;;
+		-c|--clean)
+			clean_object_file
+			exit 0
+		;;
+		-h|--help)
+			usage;
+			exit 0
+		;;
+		*)
+			usage;
+			exit 1;
+		;;
+	esac
+	
+	shift
+done
+
+if [ "$IMGTYPE" != "emmc" ] && [ "$IMGTYPE" != "sd" ];then
+	echo -e "\033[31mPlease use vaild parameter with option --type [emmc|sd]\033[0m"
+	exit 1
+fi
+
+if [ ! -f "$HWPACK" ];then 
+	echo -e "\"$HWPACK\": \033[31mNo such file\033[0m"
+	exit 1
+else
+	echo $HWPACK | grep "\.tar" > /dev/null 2>&1
+	if [ $? -ne 0 ];then
+		echo -e "\"$HWPACK\": \033[31mInvalid compressed file\033[0m"
+		usage && exit 1
+	fi 
+fi 
+
+if [ ! -f "$ROOTFS" ];then
+	echo -e "\"$ROOTFS\": \033[31mNo such file\033[0m"
+	exit 1
+else
+	echo $ROOTFS | grep "\.tar"  > /dev/null 2>&1
+	if [ $? -ne 0 ];then
+		echo -e "\"$ROOTFS\": \033[31mInvalid compressed file\033[0m"
+		usage && exit 1
+	fi
+	
+fi
+
+if [ -z "$TARGETNAME" ];then
+	TARGETNAME="$DEFAULT_SYS_IMG_NAME"
+fi
+
+create_tmp_dir
+
+create_rootfs_img $ROOTFS $HWPACK
+
+if [ "$IMGTYPE" = "emmc" ];then
+	create_fw_for_emmc
+else
+	create_img_for_sd
+fi
+
+remove_tmp_file
