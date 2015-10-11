@@ -359,7 +359,7 @@ if [ ! -f "$HWPACK" ];then
 	echo -e "\"$HWPACK\": \033[31mNo such file\033[0m"
 	exit 1
 else
-	echo $HWPACK | grep "\.tar" > /dev/null 2>&1
+	file $HWPACK | grep "compressed" > /dev/null 2>&1
 	if [ $? -ne 0 ];then
 		echo -e "\"$HWPACK\": \033[31mInvalid compressed file\033[0m"
 		usage && exit 1
@@ -370,7 +370,7 @@ if [ ! -f "$ROOTFS" ];then
 	echo -e "\"$ROOTFS\": \033[31mNo such file\033[0m"
 	exit 1
 else
-	echo $ROOTFS | grep "\.tar"  > /dev/null 2>&1
+	file $ROOTFS | grep "compressed"  > /dev/null 2>&1
 	if [ $? -ne 0 ];then
 		echo -e "\"$ROOTFS\": \033[31mInvalid compressed file\033[0m"
 		usage && exit 1
