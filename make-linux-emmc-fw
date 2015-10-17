@@ -37,7 +37,7 @@ usage()
 	echo -e "\t-o --output  Configure output file name" 
 	echo -e ""
 	echo -e "Example:"
-	echo -e "\t$SHELLNAME --hwpack xxx_hwpack.tar.[xz|bz2|gz] --rootfs xxx_directory <--cfg xxx/partition.conf> <--output s500_lemaker_guitar>"
+	echo -e "\t./$SHELLNAME --hwpack xxx_hwpack.tar.[xz|bz2|gz] --rootfs xxx_directory <--cfg xxx/partition.conf> <--output s500_lemaker_guitar>"
 	echo -e ""	
 }
 
@@ -279,7 +279,7 @@ else
 		exit 1
 	fi
 
-	cd $ROOTFS && RET_DIR=`ls` && echo $RET_DIR | grep "dev" | grep "lib" | grep "etc"  > /dev/null 2>&1
+	RET_DIR=`ls $ROOTFS` && echo $RET_DIR | grep "dev" | grep "lib" | grep "etc"  > /dev/null 2>&1
 	if [ $? -ne 0 ];then
 		echo -e "\"$ROOTFS\": \033[31mInvalid directory struture for the linux file system.\033[0m"
 		exit 1

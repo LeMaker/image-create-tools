@@ -2,7 +2,7 @@ The [LeMaker Guitar](http://www.lemaker.org/article-46-1.html) can boot system f
 If you want to make system image for SD card, please refer to the LeMaker wiki at <http://wiki.lemaker.org/LeMaker_Guitar:How_to_make_LeMaker_Guitar_OS_image>
 
 ## Usage
-	make-linux-emmc-fw --hwpack xxx_hwpack.tar.[xz|bz2|gz] --rootfs xxx_directory <--cfg xxx/partition.conf> <--output s500_lemaker_guitar>
+	./make-linux-emmc-fw --hwpack xxx_hwpack.tar.[xz|bz2|gz] --rootfs xxx_directory <--cfg xxx/partition.conf> <--output s500_lemaker_guitar>
 
 ## Command Options
 	-g --cfg     Configure partition of the system image
