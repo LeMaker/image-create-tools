@@ -1,0 +1,312 @@
+#!/bin/bash
+
+# Copyright (C) 2015 LeMaker Community <support@lemaker.org>
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#       http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+VERSION="v1.0.2"
+SHELLNAME=`basename $0`
+CUR_DIR=`pwd`
+TMP_DIR="$CUR_DIR/.tmp"
+DEFAULT_SYS_IMG_NAME="s500_lemaker_guitar"
+
+# ***Don't try to change these variables below,Unless you are already familiar with production 
+# process of system image***
+IMG_DIR=$CUR_DIR/images
+
+usage()
+{
+        echo -e "Usage:  $SHELLNAME [options] [parameters]"
+        echo -e ""
+	echo -e "Options:"
+	echo -e "\t-g --cfg     Configure partition of the system image"
+	echo -e "\t-p --hwpack  Choose platform firmware compression package"
+        echo -e "\t-r --rootfs  Specify file system directory"
+	echo -e "\t-h --help    Help information"
+	echo -e "\t-c --clean   Clean all object file"
+	echo -e "\t-o --output  Configure output file name" 
+	echo -e ""
+	echo -e "Example:"
+	echo -e "\t$SHELLNAME --hwpack xxx_hwpack.tar.[xz|bz2|gz] --rootfs xxx_directory <--cfg xxx/partition.conf> <--output s500_lemaker_guitar>"
+	echo -e ""	
+}
+
+create_tmp_dir()
+{
+	if [ ! -d "$TMP_DIR/mnt" ]; then
+  		mkdir -pv $TMP_DIR/mnt
+	fi
+	
+	if [ ! -d "$TMP_DIR/hwpack" ];then
+		mkdir -pv $TMP_DIR/hwpack
+	fi
+	
+	if [ ! -d "$CUR_DIR/images" ];then
+		mkdir -pv $CUR_DIR/images
+	fi
+}
+	
+remove_tmp_file()
+{
+	rm -rf $CUR_DIR/tools/partition.cfg
+	rm -rf $CUR_DIR/tools/Output
+}
+
+#Clean all object files
+#
+clean_object_file()
+{
+	remove_tmp_file;
+	rm -rf $TMP_DIR
+	rm -rf $IMG_DIR/*
+	rm -rf $CUR_DIR/*.fw
+}
+
+echo_info()
+{
+	echo "------------------------------------------------"
+	echo -e "$1"
+}
+
+# Arguments:
+#   $1 - source compressed file
+#   $2 - target directory
+#
+decompress_file()
+{
+	echo_info "Start to decompress file \""$1"\""
+	tar xf $1 -C $2
+	if [ $? -ne 0 ];then
+		echo_info "\"$1\": \033[31mDecompress the file failed\033[0m"
+		return 1
+	fi
+	
+	return 0	
+}
+
+# Arguments:
+#   $1 - hwpack package
+#   $2 - real rootfs
+#
+extract_firmware_package()
+{
+	if [ ! -f "$TMP_DIR/hwpack.md5" ];then
+		decompress_file $1 $TMP_DIR/hwpack
+		if [ $? -ne 0 ];then
+               		exit 1
+        	fi
+		md5sum $1 | cut -d ' ' -f1 > $TMP_DIR/hwpack.md5
+	else
+		LAST_MD5=`cat $TMP_DIR/hwpack.md5`
+		CURT_MD5=`md5sum $1 | cut -d ' ' -f1`
+		if [ "${LAST_MD5}" = "${CURT_MD5}" ];then
+			echo_info "\033[32m\"$1\" doesn't update, Don't need to decompress again\033[0m"
+		else
+			rm -rf $TMP_DIR/hwpack/*
+			decompress_file $1 $TMP_DIR/hwpack
+			if [ $? -ne 0 ];then
+                        	exit 1
+			fi
+			echo $CURT_MD5 > $TMP_DIR/hwpack.md5
+                fi
+	fi
+
+        echo_info "Start to extract the platform firmware package"
+        [ -d "$2/etc/modprobe.d" ] && rm -rf $2/etc/modprobe.d/* && \
+        cp -a $TMP_DIR/hwpack/rootfs/etc/modprobe.d/* $2/etc/modprobe.d/
+        cp -a $TMP_DIR/hwpack/rootfs/etc/* $2/etc
+        rm -rf $2/lib/modules && cp -a $TMP_DIR/hwpack/rootfs/lib/* $2/lib
+
+        cp -f $TMP_DIR/hwpack/bootloader/{bootloader.bin,u-boot-dtb.img} $IMG_DIR
+        cp -f $TMP_DIR/hwpack/kernel/$MISC_DWNFILE $IMG_DIR
+}
+parse_partition_config()
+{
+	sed -i -e 's/^;.*//g' -e '/^$/d' -e 's/[[:space:]]//g' $1
+	PARTITION_NUM=`grep -c "partition" $1`
+	if [ $PARTITION_NUM -lt 2 ];then
+        	echo -e "\"$1\": \033[31mInvalid partition file\033[0m"
+        	exit 1
+	fi
+
+	grep -n "partition" $1 > $TMP_DIR/partition.tmp
+	
+	PARTITION_ARRAY=($(awk -F: '{print $1}' $TMP_DIR/partition.tmp))
+	
+	#Get first  partition information
+	MISC_LABEL=`sed   -n "${PARTITION_ARRAY[0]},${PARTITION_ARRAY[1]} p" $1 | grep "label" | cut -d '=' -f2 | tr "A-Z" "a-z"`
+	MISC_DWNFILE=`sed -n "${PARTITION_ARRAY[0]},${PARTITION_ARRAY[1]} p" $1 | grep "downloadfile" | cut -d '=' -f2`
+	
+	if [ ${#PARTITION_ARRAY[@]} -eq 2 ];then
+	        END_PARTITION="$"
+	else
+	        END_PARTITION=${PARTITION_ARRAY[2]}
+	fi
+
+	#Get second partition information
+	ROOTFS_LABEL=`sed   -n "${PARTITION_ARRAY[1]},$END_PARTITION p" $1 | grep "label" | cut -d '=' -f2 | tr "A-Z" "a-z"`
+	ROOTFS_FSTYPE=`sed  -n "${PARTITION_ARRAY[1]},$END_PARTITION p" $1 | grep "fstype" | cut -d '=' -f2 | tr "A-Z" "a-z"`
+	ROOTFS_SIZE=`sed    -n "${PARTITION_ARRAY[1]},$END_PARTITION p" $1 | grep "size" | cut -d '=' -f2`
+	ROOTFS_DWNFILE=`sed -n "${PARTITION_ARRAY[1]},$END_PARTITION p" $1 | grep "downloadfile" | cut -d '=' -f2`
+}
+	
+#create rootfs image for emmc
+# Arguments
+#   $1 - source rootfs file
+#   $2 - source hwpack file
+#
+create_rootfs_img()
+{
+	if [ -e "$IMG_DIR/$ROOTFS_DWNFILE" ];then
+		mount -o loop $IMG_DIR/$ROOTFS_DWNFILE $TMP_DIR/mnt
+		rm -rf $TMP_DIR/mnt/*
+	else
+		echo_info "Start to create \"$ROOTFS_DWNFILE\" by using dd command, please wait ..."
+		dd if=/dev/zero of=$IMG_DIR/$ROOTFS_DWNFILE bs=1M count=$ROOTFS_SIZE > /dev/null 2>&1
+		mkfs.${ROOTFS_FSTYPE} -F -L $ROOTFS_LABEL $IMG_DIR/$ROOTFS_DWNFILE > /dev/null 2>&1
+		mount -o loop $IMG_DIR/$ROOTFS_DWNFILE $TMP_DIR/mnt
+	fi
+		
+	echo_info "Start to copy file system, please wait ..."
+       	cp -a $1/* $TMP_DIR/mnt/
+	
+	extract_firmware_package $2 $TMP_DIR/mnt
+
+	sync && umount $TMP_DIR/mnt
+}
+
+#create system firmware for emmc
+#
+create_fw_for_emmc()
+{
+	echo_info "\033[32m\n*** Start to create firmware for emmc ***\n\033[0m"
+	cd $CUR_DIR/tools && \
+	./maker_install.run && \
+	python partition_create.py partition.conf partition.cfg && \
+	./linux_build_fw fwimage_linux.cfg $IMG_DIR $TARGETNAME && \
+	cd $CUR_DIR
+}
+
+# ************************
+# * Shell start here *
+# ************************
+
+if [ `id -u` -ne 0 ];then
+	echo -e "Please run the script with \033[31mroot\033[0m"
+	exit 1
+fi
+
+if [ $# -eq 0 ];then
+	usage;
+	exit 1;
+fi
+
+while [ $# -gt 0 ];
+do
+	case "$1" in
+		-g|--cfg)
+			CONFIG=$2
+			shift
+		;;
+		-p|--hwpack)
+			HWPACK=$2;
+			shift
+		;;
+		-r|--rootfs)
+			ROOTFS=$2;
+			shift
+		;;
+		-o|--output)
+			TARGETNAME=$2;
+			shift
+		;;
+		-c|--clean)
+			clean_object_file
+			exit 0
+		;;
+		-h|--help)
+			usage;
+			exit 0
+		;;
+		*)
+			usage;
+			exit 1;
+		;;
+	esac
+	
+	shift
+done
+
+if [ -z "$CONFIG" ];then
+	cp -f $CUR_DIR/config/partition.conf $CUR_DIR/tools
+else
+	echo $CONFIG | grep "partition.conf"
+	if [ $? -ne 0 ];then
+		echo -e "\"$CONFIG\": \033[31mPartition file name error\033[0m"
+		exit 1
+	else
+		cp -f $CONFIG $CUR_DIR/tools
+	fi
+fi
+
+if [ ! -f "$HWPACK" ];then 
+	echo -e "\"$HWPACK\": \033[31mNo such file\033[0m"
+	exit 1
+else
+	file $HWPACK | grep "compressed" > /dev/null 2>&1
+	if [ $? -ne 0 ];then
+		echo -e "\"$HWPACK\": \033[31mInvalid compressed file\033[0m"
+		exit 1
+	fi 
+fi 
+
+if [ ! -d "$ROOTFS" ];then
+	echo -e "\"$ROOTFS\": \033[31mNo such directory\033[0m"
+	exit 1
+else
+	if [ "$ROOTFS" = "/" ];then
+		echo -e "\"$ROOTFS\": \033[31mInvalid directory for system firmware.\033[0m"
+		exit 1
+	fi
+
+	cd $ROOTFS && RET_DIR=`ls` && echo $RET_DIR | grep "dev" | grep "lib" | grep "etc"  > /dev/null 2>&1
+	if [ $? -ne 0 ];then
+		echo -e "\"$ROOTFS\": \033[31mInvalid directory struture for the linux file system.\033[0m"
+		exit 1
+	fi	
+fi
+
+if [ -z "$TARGETNAME" ];then
+	TARGETNAME="$DEFAULT_SYS_IMG_NAME"
+fi
+
+if [ -f "$TMP_DIR/partition.conf.md5" ];then
+	LAST_MD5=`cat $TMP_DIR/partition.conf.md5`
+	CURT_MD5=`md5sum $CUR_DIR/tools/partition.conf | cut -d ' ' -f1`
+	if [ "${LAST_MD5}" != "${CURT_MD5}" ];then
+		echo_info  "\033[32m\"$CUR_DIR/tools/partition.conf\" has been updated, clean all object file\033[0m"
+		clean_object_file
+	fi	
+fi
+
+create_tmp_dir
+
+md5sum $CUR_DIR/tools/partition.conf | cut -d ' ' -f1 > $TMP_DIR/partition.conf.md5
+
+parse_partition_config $CUR_DIR/tools/partition.conf
+
+create_rootfs_img $ROOTFS $HWPACK
+
+create_fw_for_emmc
+
+remove_tmp_file

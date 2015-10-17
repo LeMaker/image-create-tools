@@ -51,7 +51,7 @@ def OutFile(fileName, partion_list):
     # updpate the property file
     logger.debug('out file:%s'%(fileName));
     fp=open(fileName,'w');
-    line = '\nSETPATH="..\\output" \n';
+    line = '\nSETPATH="..\\images" \n';
     line +='PARTITION_I=0, "MBRC", "./bootloader.bin", "RAW", "IMG", 0x11;\n' ;
     line +='PARTITION_I=1, "BOOT", "./u-boot-dtb.img", "RAW", "IMG", 0x11;\n' ;
     line += '\nSETPATH="."\n';
