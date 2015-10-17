@@ -29,7 +29,7 @@ If you want to initialize the parition with image file, please refer to the foll
 	3. sudo mount -o loop {downloadfile}  /mnt  
 	4. sudo cp -a "files" /mnt  
 	5. sudo sync && umount /mnt  
-Then copy the *{downloadfile}* to the **images** directory, and start to make system firmware.
+Then copy the *{downloadfile}* to the **images** directory(will be automatically created), and start to make system firmware.
 
 For more information about the configure file, please check **config/partition.conf**
 
